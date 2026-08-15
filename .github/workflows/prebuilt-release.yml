@@ -2,11 +2,8 @@ name: Prebuilt Release
 
 # 通用预编译工作流
 # 支持自定义指定任意 Git 仓库、分支、Tag、Commit 或 PR 编号
+# 支持自定义编译平台与后端，避免全端编译浪费资源
 # 参考 llama.cpp 官方 release.yml 设计
-#
-# 权限说明：
-#   - 若目标仓库与当前仓库相同（或公开仓库）：GITHUB_TOKEN 自动可用
-#   - 若目标仓库为私有或跨组织：需在仓库 Secrets 中配置 PAT_TOKEN
 
 on:
   workflow_dispatch:
@@ -36,6 +33,11 @@ on:
         required: true
         default: true
         type: boolean
+      platforms:
+        description: '编译平台（逗号分隔：macos,linux,windows,android）'
+        required: true
+        default: 'macos,linux,windows,android'
+        type: string
       backends:
         description: '启用的后端（逗号分隔：cpu,vulkan,cuda,metal,rocm,sycl,openvino,android）'
         required: true
@@ -75,6 +77,7 @@ jobs:
       pr_display: ${{ steps.resolve.outputs.pr_display }}
       is_pr: ${{ steps.resolve.outputs.is_pr }}
       create_release: ${{ steps.resolve.outputs.create_release }}
+      platforms: ${{ steps.parse.outputs.platforms }}
       backends_cpu: ${{ steps.parse.outputs.backends_cpu }}
       backends_vulkan: ${{ steps.parse.outputs.backends_vulkan }}
       backends_cuda: ${{ steps.parse.outputs.backends_cuda }}
@@ -138,9 +141,12 @@ jobs:
           echo "create_release=${create_release}" >> "$GITHUB_OUTPUT"
           echo "Resolved: ${repo_full} @ ${ref} (PR=${is_pr})"
 
-      - name: Parse backends
+      - name: Parse platforms & backends
         id: parse
         run: |
+          platforms="${{ github.event.inputs.platforms }}"
+          echo "platforms=${platforms}" >> "$GITHUB_OUTPUT"
+
           backends="${{ github.event.inputs.backends }}"
           for b in cpu vulkan cuda metal rocm sycl openvino android; do
             if echo "$backends" | grep -qi "$b"; then
@@ -149,6 +155,7 @@ jobs:
               echo "backends_${b}=false" >> "$GITHUB_OUTPUT"
             fi
           done
+          echo "Active platforms: $platforms"
           echo "Active backends: $backends"
 
       - name: Checkout target repo (for version detection)
@@ -187,7 +194,7 @@ jobs:
   # ═══════════════════════════════════════════
   macos:
     needs: prepare
-    if: ${{ needs.prepare.outputs.backends_cpu == 'true' || needs.prepare.outputs.backends_metal == 'true' }}
+    if: ${{ contains(needs.prepare.outputs.platforms, 'macos') && (needs.prepare.outputs.backends_cpu == 'true' || needs.prepare.outputs.backends_metal == 'true') }}
     strategy:
       fail-fast: false
       matrix:
@@ -246,7 +253,7 @@ jobs:
   # ═══════════════════════════════════════════
   linux-cpu:
     needs: prepare
-    if: ${{ needs.prepare.outputs.backends_cpu == 'true' }}
+    if: ${{ contains(needs.prepare.outputs.platforms, 'linux') && needs.prepare.outputs.backends_cpu == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -314,7 +321,7 @@ jobs:
   # ═══════════════════════════════════════════
   linux-vulkan:
     needs: prepare
-    if: ${{ needs.prepare.outputs.backends_vulkan == 'true' }}
+    if: ${{ contains(needs.prepare.outputs.platforms, 'linux') && needs.prepare.outputs.backends_vulkan == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -384,7 +391,7 @@ jobs:
   # ═══════════════════════════════════════════
   android:
     needs: prepare
-    if: ${{ needs.prepare.outputs.backends_android == 'true' }}
+    if: ${{ contains(needs.prepare.outputs.platforms, 'android') && needs.prepare.outputs.backends_android == 'true' }}
     runs-on: ubuntu-latest
     env:
       NDK_VERSION: "27.0.11718014"
@@ -445,7 +452,7 @@ jobs:
   # ═══════════════════════════════════════════
   windows-cpu:
     needs: prepare
-    if: ${{ needs.prepare.outputs.backends_cpu == 'true' }}
+    if: ${{ contains(needs.prepare.outputs.platforms, 'windows') && needs.prepare.outputs.backends_cpu == 'true' }}
     strategy:
       fail-fast: false
       matrix:
@@ -499,14 +506,14 @@ jobs:
   # ═══════════════════════════════════════════
   windows-cuda:
     needs: prepare
-    if: ${{ needs.prepare.outputs.backends_cuda == 'true' }}
+    if: ${{ contains(needs.prepare.outputs.platforms, 'windows') && needs.prepare.outputs.backends_cuda == 'true' }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - cuda: '12.4'
+          - cuda: '12.4.1'
             arch: 'x64'
-          - cuda: '13.3'
+          - cuda: '13.3.0'
             arch: 'x64'
     runs-on: windows-2022
     env:
@@ -520,7 +527,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.21
+        uses: Jimver/cuda-toolkit@v0.2.36
         with:
           cuda: ${{ matrix.cuda }}
           sub-packages: '[]'
@@ -562,7 +569,7 @@ jobs:
   # ═══════════════════════════════════════════
   windows-vulkan:
     needs: prepare
-    if: ${{ needs.prepare.outputs.backends_vulkan == 'true' }}
+    if: ${{ contains(needs.prepare.outputs.platforms, 'windows') && needs.prepare.outputs.backends_vulkan == 'true' }}
     runs-on: windows-latest
     env:
       VULKAN_VERSION: "1.4.357.0"
@@ -643,6 +650,7 @@ jobs:
             - 源仓库: `${{ needs.prepare.outputs.repo_url }}`
             - 分支/Ref: `${{ needs.prepare.outputs.ref }}`
             - PR 编号: `${{ needs.prepare.outputs.pr_display }}`
+            - 编译平台: `${{ github.event.inputs.platforms }}`
             - 编译后端: `${{ github.event.inputs.backends }}`
           files: release/*
           draft: false
