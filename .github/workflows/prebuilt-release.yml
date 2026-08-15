@@ -1,0 +1,649 @@
+name: Prebuilt Release
+
+# 通用预编译工作流
+# 支持自定义指定任意 Git 仓库、分支、Tag、Commit 或 PR 编号
+# 参考 llama.cpp 官方 release.yml 设计
+#
+# 权限说明：
+#   - 若目标仓库与当前仓库相同（或公开仓库）：GITHUB_TOKEN 自动可用
+#   - 若目标仓库为私有或跨组织：需在仓库 Secrets 中配置 PAT_TOKEN
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_url:
+        description: '要编译的仓库 URL（如 https://github.com/ggml-org/llama.cpp）'
+        required: true
+        default: 'https://github.com/ggml-org/llama.cpp'
+        type: string
+      ref:
+        description: '分支 / Tag / Commit（留空则自动检测）'
+        required: false
+        default: 'master'
+        type: string
+      pr_number:
+        description: 'PR 编号（如果填写，优先编译该 PR 的 merge commit，repo_url 和 ref 将被覆盖）'
+        required: false
+        default: ''
+        type: string
+      tag_name:
+        description: 'Release Tag 名称（留空则自动生成）'
+        required: false
+        default: ''
+        type: string
+      create_release:
+        description: '是否创建 GitHub Release 并上传产物'
+        required: true
+        default: true
+        type: boolean
+      backends:
+        description: '启用的后端（逗号分隔：cpu,vulkan,cuda,metal,rocm,sycl,openvino,android）'
+        required: true
+        default: 'cpu,vulkan,cuda,metal,android'
+        type: string
+      cmake_args:
+        description: '额外 CMake 参数（如 -DGGML_CUDA=ON -DLLAMA_BUILD_SERVER=ON）'
+        required: false
+        default: '-DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON'
+        type: string
+
+env:
+  # 优先使用 PAT_TOKEN（跨仓库/私有仓库），回退到 GITHUB_TOKEN（同仓库/公开仓库）
+  GH_TOKEN: ${{ secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+
+# 串行执行以更好地复用缓存
+concurrency:
+  group: prebuilt-release-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  # ═══════════════════════════════════════════
+  # 1. 解析参数 & 生成版本号
+  # ═══════════════════════════════════════════
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      tag_name: ${{ steps.version.outputs.tag_name }}
+      repo_url: ${{ steps.resolve.outputs.repo_url }}
+      repo_full: ${{ steps.resolve.outputs.repo_full }}
+      repo_name: ${{ steps.resolve.outputs.repo_name }}
+      ref: ${{ steps.resolve.outputs.ref }}
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      pr_display: ${{ steps.resolve.outputs.pr_display }}
+      is_pr: ${{ steps.resolve.outputs.is_pr }}
+      create_release: ${{ steps.resolve.outputs.create_release }}
+      backends_cpu: ${{ steps.parse.outputs.backends_cpu }}
+      backends_vulkan: ${{ steps.parse.outputs.backends_vulkan }}
+      backends_cuda: ${{ steps.parse.outputs.backends_cuda }}
+      backends_metal: ${{ steps.parse.outputs.backends_metal }}
+      backends_rocm: ${{ steps.parse.outputs.backends_rocm }}
+      backends_sycl: ${{ steps.parse.outputs.backends_sycl }}
+      backends_openvino: ${{ steps.parse.outputs.backends_openvino }}
+      backends_android: ${{ steps.parse.outputs.backends_android }}
+    steps:
+      - name: Resolve source (manual vs PR)
+        id: resolve
+        run: |
+          set -e
+          pr_input="${{ github.event.inputs.pr_number }}"
+          is_pr="false"
+          create_release="${{ github.event.inputs.create_release }}"
+
+          if [ -n "$pr_input" ]; then
+            # 模式 B：手动指定了 PR 编号
+            # 从 repo_url 提取 owner/repo
+            repo_full="${{ github.event.inputs.repo_url }}"
+            repo_full="${repo_full#https://github.com/}"
+            repo_full="${repo_full%.git}"
+            echo "Fetching PR #${pr_input} from ${repo_full} ..."
+
+            pr_data=$(curl -sL -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${repo_full}/pulls/${pr_input}")
+
+            # 检查 API 返回是否有效
+            if echo "$pr_data" | jq -e '.message' >/dev/null 2>&1; then
+              echo "ERROR: GitHub API returned: $(echo "$pr_data" | jq -r '.message')"
+              exit 1
+            fi
+
+            repo_url=$(echo "$pr_data" | jq -r '.head.repo.clone_url')
+            ref=$(echo "$pr_data" | jq -r '.head.ref')
+            pr_number="${pr_input}"
+            is_pr="true"
+            echo "Resolved PR #${pr_number}: ${repo_url} @ ${ref}"
+          else
+            # 模式 A：手动指定仓库+分支
+            repo_url="${{ github.event.inputs.repo_url }}"
+            ref="${{ github.event.inputs.ref }}"
+            pr_number=""
+            echo "Mode: manual dispatch"
+          fi
+
+          # 提取 owner/repo 格式（供 actions/checkout 使用）和纯仓库名（供产物命名使用）
+          repo_full="${repo_url#https://github.com/}"
+          repo_full="${repo_full%.git}"
+          repo_name=$(basename "$repo_full")
+
+          echo "repo_url=${repo_url}" >> "$GITHUB_OUTPUT"
+          echo "repo_full=${repo_full}" >> "$GITHUB_OUTPUT"
+          echo "repo_name=${repo_name}" >> "$GITHUB_OUTPUT"
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+          echo "pr_number=${pr_number}" >> "$GITHUB_OUTPUT"
+          echo "pr_display=${pr_number:-无}" >> "$GITHUB_OUTPUT"
+          echo "is_pr=${is_pr}" >> "$GITHUB_OUTPUT"
+          echo "create_release=${create_release}" >> "$GITHUB_OUTPUT"
+          echo "Resolved: ${repo_full} @ ${ref} (PR=${is_pr})"
+
+      - name: Parse backends
+        id: parse
+        run: |
+          backends="${{ github.event.inputs.backends }}"
+          for b in cpu vulkan cuda metal rocm sycl openvino android; do
+            if echo "$backends" | grep -qi "$b"; then
+              echo "backends_${b}=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "backends_${b}=false" >> "$GITHUB_OUTPUT"
+            fi
+          done
+          echo "Active backends: $backends"
+
+      - name: Checkout target repo (for version detection)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.resolve.outputs.repo_full }}
+          ref: ${{ steps.resolve.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Generate version tag
+        id: version
+        run: |
+          set -e
+          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            tag="${{ github.event.inputs.tag_name }}"
+          elif [ -f "cmake/build-info.cmake" ] && grep -q "BUILD_NUMBER" cmake/build-info.cmake; then
+            build_number=$(grep "set(BUILD_NUMBER" cmake/build-info.cmake | grep -oP '\d+' | head -1)
+            if [ -n "$build_number" ] && [ "$build_number" -gt 0 ]; then
+              tag="b${build_number}"
+            fi
+          fi
+          if [ -z "$tag" ]; then
+            short_sha=$(git rev-parse --short HEAD)
+            epoch=$(date +%s)
+            tag="${short_sha}-${epoch}"
+          fi
+          # 如果是 PR，加上 pr-xxx 前缀
+          if [ "${{ steps.resolve.outputs.is_pr }}" = "true" ] && [ -n "${{ steps.resolve.outputs.pr_number }}" ]; then
+            tag="pr-${{ steps.resolve.outputs.pr_number }}-${tag}"
+          fi
+          echo "tag_name=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag: ${tag}"
+
+  # ═══════════════════════════════════════════
+  # 2. macOS 编译（CPU + Metal）
+  # ═══════════════════════════════════════════
+  macos:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.backends_cpu == 'true' || needs.prepare.outputs.backends_metal == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - build: 'arm64'
+            arch: 'arm64'
+            os: 'macos-latest'
+            defines: "-DGGML_METAL=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3"
+          - build: 'x64'
+            arch: 'x64'
+            os: 'macos-13'
+            defines: "-DGGML_METAL=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3"
+    runs-on: ${{ matrix.os }}
+    env:
+      CMAKE_ARGS: ${{ github.event.inputs.cmake_args }}
+    steps:
+      - name: Clone target repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.prepare.outputs.repo_full }}
+          ref: ${{ needs.prepare.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: prebuilt-macos-${{ matrix.build }}-${{ needs.prepare.outputs.ref }}
+          max-size: 2G
+
+      - name: Build
+        run: |
+          cmake -B build \
+            ${{ matrix.defines }} \
+            -DCMAKE_INSTALL_RPATH='@loader_path' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_NATIVE=OFF \
+            -DLLAMA_FATAL_WARNINGS=ON \
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release -j $(sysctl -n hw.logicalcpu)
+
+      - name: Pack artifacts
+        run: |
+          cp LICENSE ./build/bin/ 2>/dev/null || true
+          tar -czvf ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-macos-${{ matrix.build }}.tar.gz \
+            -s ",^\\.,${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}," \
+            -C ./build/bin .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.repo_name }}-bin-macos-${{ matrix.build }}.tar.gz
+          path: ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-macos-${{ matrix.build }}.tar.gz
+
+  # ═══════════════════════════════════════════
+  # 3. Linux CPU 编译（x64 / arm64）
+  # ═══════════════════════════════════════════
+  linux-cpu:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.backends_cpu == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - build: 'x64'
+            os: 'ubuntu-22.04'
+          - build: 'arm64'
+            os: 'ubuntu-24.04-arm'
+    runs-on: ${{ matrix.os }}
+    env:
+      CMAKE_ARGS: ${{ github.event.inputs.cmake_args }}
+    steps:
+      - name: Clone target repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.prepare.outputs.repo_full }}
+          ref: ${{ needs.prepare.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential libssl-dev
+
+      - name: Toolchain workaround (GCC 14)
+        if: ${{ contains(matrix.os, 'ubuntu-24.04') }}
+        run: |
+          sudo apt-get install -y gcc-14 g++-14
+          echo "CC=gcc-14" >> "$GITHUB_ENV"
+          echo "CXX=g++-14" >> "$GITHUB_ENV"
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: prebuilt-linux-cpu-${{ matrix.build }}-${{ needs.prepare.outputs.ref }}
+          max-size: 2G
+
+      - name: Build
+        run: |
+          cmake -B build \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ALL_VARIANTS=ON \
+            -DLLAMA_FATAL_WARNINGS=ON \
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Pack artifacts
+        run: |
+          cp LICENSE ./build/bin/ 2>/dev/null || true
+          tar -czvf ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-linux-${{ matrix.build }}.tar.gz \
+            --transform "s,^\\.,${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}," \
+            -C ./build/bin .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.repo_name }}-bin-linux-${{ matrix.build }}.tar.gz
+          path: ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-linux-${{ matrix.build }}.tar.gz
+
+  # ═══════════════════════════════════════════
+  # 4. Linux Vulkan 编译
+  # ═══════════════════════════════════════════
+  linux-vulkan:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.backends_vulkan == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - build: 'x64'
+            os: 'ubuntu-22.04'
+          - build: 'arm64'
+            os: 'ubuntu-24.04-arm'
+    runs-on: ${{ matrix.os }}
+    env:
+      CMAKE_ARGS: ${{ github.event.inputs.cmake_args }}
+    steps:
+      - name: Clone target repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.prepare.outputs.repo_full }}
+          ref: ${{ needs.prepare.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Install Vulkan SDK
+        run: |
+          if [[ "${{ matrix.os }}" =~ "ubuntu-22.04" ]]; then
+            wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
+            sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+            sudo apt-get update -y
+            sudo apt-get install -y build-essential mesa-vulkan-drivers vulkan-sdk libssl-dev
+          else
+            sudo apt-get update -y
+            sudo apt-get install -y gcc-14 g++-14 build-essential glslc libvulkan-dev spirv-headers libssl-dev ninja-build
+            echo "CC=gcc-14" >> "$GITHUB_ENV"
+            echo "CXX=g++-14" >> "$GITHUB_ENV"
+          fi
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: prebuilt-linux-vulkan-${{ matrix.build }}-${{ needs.prepare.outputs.ref }}
+          max-size: 2G
+
+      - name: Build
+        run: |
+          cmake -B build \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ALL_VARIANTS=ON \
+            -DGGML_VULKAN=ON \
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Pack artifacts
+        run: |
+          cp LICENSE ./build/bin/ 2>/dev/null || true
+          tar -czvf ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-linux-vulkan-${{ matrix.build }}.tar.gz \
+            --transform "s,^\\.,${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}," \
+            -C ./build/bin .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.repo_name }}-bin-linux-vulkan-${{ matrix.build }}.tar.gz
+          path: ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-linux-vulkan-${{ matrix.build }}.tar.gz
+
+  # ═══════════════════════════════════════════
+  # 5. Android 编译（arm64）
+  # ═══════════════════════════════════════════
+  android:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.backends_android == 'true' }}
+    runs-on: ubuntu-latest
+    env:
+      NDK_VERSION: "27.0.11718014"
+      CMAKE_ARGS: ${{ github.event.inputs.cmake_args }}
+    steps:
+      - name: Clone target repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.prepare.outputs.repo_full }}
+          ref: ${{ needs.prepare.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Setup JDK & Android SDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: temurin
+
+      - uses: android-actions/setup-android@v3
+        with:
+          log-accepted-android-sdk-licenses: false
+
+      - name: Install NDK
+        run: |
+          sdkmanager "ndk;${{ env.NDK_VERSION }}"
+          echo "ANDROID_NDK=${ANDROID_SDK_ROOT}/ndk/${{ env.NDK_VERSION }}" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          cmake -B build \
+            -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK}/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-28 \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ALL_VARIANTS=ON \
+            -DGGML_OPENMP=OFF \
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Pack artifacts
+        run: |
+          cp LICENSE ./build/bin/ 2>/dev/null || true
+          tar -czvf ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-android-arm64.tar.gz \
+            --transform "s,^\\.,${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}," \
+            -C ./build/bin .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.repo_name }}-bin-android-arm64.tar.gz
+          path: ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-android-arm64.tar.gz
+
+  # ═══════════════════════════════════════════
+  # 6. Windows CPU 编译（x64 / arm64）
+  # ═══════════════════════════════════════════
+  windows-cpu:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.backends_cpu == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: 'x64'
+          - arch: 'arm64'
+    runs-on: windows-latest
+    env:
+      CMAKE_ARGS: ${{ github.event.inputs.cmake_args }}
+    steps:
+      - name: Clone target repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.prepare.outputs.repo_full }}
+          ref: ${{ needs.prepare.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Install Ninja
+        run: choco install ninja
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: prebuilt-windows-cpu-${{ matrix.arch }}-${{ needs.prepare.outputs.ref }}
+          max-size: 2G
+
+      - name: Build
+        shell: cmd
+        run: |
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -D CMAKE_TOOLCHAIN_FILE=cmake/${{ matrix.arch }}-windows-llvm.cmake ^
+            -DGGML_NATIVE=OFF ^
+            -DGGML_BACKEND_DL=ON ^
+            -DGGML_CPU_ALL_VARIANTS=${{ matrix.arch == 'x64' && 'ON' || 'OFF' }} ^
+            -DGGML_OPENMP=ON ^
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release
+
+      - name: Pack artifacts
+        run: |
+          7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-cpu-${{ matrix.arch }}.zip .\build\bin\Release\*
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.repo_name }}-bin-win-cpu-${{ matrix.arch }}.zip
+          path: ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-cpu-${{ matrix.arch }}.zip
+
+  # ═══════════════════════════════════════════
+  # 7. Windows CUDA 编译
+  # ═══════════════════════════════════════════
+  windows-cuda:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.backends_cuda == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cuda: '12.4'
+            arch: 'x64'
+          - cuda: '13.3'
+            arch: 'x64'
+    runs-on: windows-2022
+    env:
+      CMAKE_ARGS: ${{ github.event.inputs.cmake_args }}
+    steps:
+      - name: Clone target repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.prepare.outputs.repo_full }}
+          ref: ${{ needs.prepare.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.21
+        with:
+          cuda: ${{ matrix.cuda }}
+          sub-packages: '[]'
+          method: 'network'
+
+      - name: Install Ninja
+        run: choco install ninja
+
+      - name: Setup ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: prebuilt-windows-cuda${{ matrix.cuda }}-${{ needs.prepare.outputs.ref }}
+          max-size: 2G
+
+      - name: Build
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -DGGML_BACKEND_DL=ON ^
+            -DGGML_NATIVE=OFF ^
+            -DGGML_CPU=OFF ^
+            -DGGML_CUDA=ON ^
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release -j %NUMBER_OF_PROCESSORS%
+
+      - name: Pack artifacts
+        run: |
+          7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-cuda-${{ matrix.cuda }}-${{ matrix.arch }}.zip .\build\bin\Release\*
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.repo_name }}-bin-win-cuda-${{ matrix.cuda }}-${{ matrix.arch }}.zip
+          path: ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-cuda-${{ matrix.cuda }}-${{ matrix.arch }}.zip
+
+  # ═══════════════════════════════════════════
+  # 8. Windows Vulkan 编译
+  # ═══════════════════════════════════════════
+  windows-vulkan:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.backends_vulkan == 'true' }}
+    runs-on: windows-latest
+    env:
+      VULKAN_VERSION: "1.4.357.0"
+      CMAKE_ARGS: ${{ github.event.inputs.cmake_args }}
+    steps:
+      - name: Clone target repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ needs.prepare.outputs.repo_full }}
+          ref: ${{ needs.prepare.outputs.ref }}
+          fetch-depth: 0
+
+      - name: Install Vulkan SDK
+        run: |
+          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
+          & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\bin"
+
+      - name: Install Ninja
+        run: choco install ninja
+
+      - name: Build
+        run: |
+          cmake -S . -B build -G "Ninja Multi-Config" `
+            -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_CPU=OFF -DGGML_BACKEND_DL=ON `
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release
+
+      - name: Pack artifacts
+        run: |
+          7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-vulkan-x64.zip .\build\bin\Release\*
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.prepare.outputs.repo_name }}-bin-win-vulkan-x64.zip
+          path: ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-vulkan-x64.zip
+
+  # ═══════════════════════════════════════════
+  # 9. 汇总 & 创建 Release
+  # ═══════════════════════════════════════════
+  release:
+    needs:
+      - prepare
+      - macos
+      - linux-cpu
+      - linux-vulkan
+      - android
+      - windows-cpu
+      - windows-cuda
+      - windows-vulkan
+    if: ${{ always() && needs.prepare.result == 'success' && needs.prepare.outputs.create_release == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+          merge-multiple: true
+
+      - name: Organize release files
+        run: |
+          mkdir -p release
+          mv artifacts/*.zip release/ 2>/dev/null || true
+          mv artifacts/*.tar.gz release/ 2>/dev/null || true
+          ls -lh release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag_name }}
+          name: "Prebuilt ${{ needs.prepare.outputs.tag_name }}"
+          body: |
+            自动预编译产物
+            - 源仓库: `${{ needs.prepare.outputs.repo_url }}`
+            - 分支/Ref: `${{ needs.prepare.outputs.ref }}`
+            - PR 编号: `${{ needs.prepare.outputs.pr_display }}`
+            - 编译后端: `${{ github.event.inputs.backends }}`
+          files: release/*
+          draft: false
+          prerelease: ${{ needs.prepare.outputs.is_pr == 'true' }}
