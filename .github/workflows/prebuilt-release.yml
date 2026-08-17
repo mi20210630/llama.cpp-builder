@@ -2,7 +2,7 @@ name: Prebuilt Release
 
 # 通用预编译工作流
 # 支持自定义指定任意 Git 仓库、分支、Tag、Commit 或 PR 编号
-# 支持自定义编译平台与后端，避免全端编译浪费资源
+# 支持自定义编译平台、架构与后端，避免全端编译浪费资源
 # 参考 llama.cpp 官方 release.yml 设计
 
 on:
@@ -38,6 +38,11 @@ on:
         required: true
         default: 'macos,linux,windows,android'
         type: string
+      archs:
+        description: '编译架构（逗号分隔：x64,arm64）'
+        required: true
+        default: 'x64,arm64'
+        type: string
       backends:
         description: '启用的后端（逗号分隔：cpu,vulkan,cuda,metal,rocm,sycl,openvino,android）'
         required: true
@@ -46,7 +51,7 @@ on:
       cmake_args:
         description: '额外 CMake 参数（如 -DGGML_CUDA=ON -DLLAMA_BUILD_SERVER=ON）'
         required: false
-        default: '-DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON'
+        default: '-DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON -DLLAMA_OPENSSL=OFF'
         type: string
 
 env:
@@ -78,6 +83,10 @@ jobs:
       is_pr: ${{ steps.resolve.outputs.is_pr }}
       create_release: ${{ steps.resolve.outputs.create_release }}
       platforms: ${{ steps.parse.outputs.platforms }}
+      arch_x64: ${{ steps.parse.outputs.arch_x64 }}
+      arch_arm64: ${{ steps.parse.outputs.arch_arm64 }}
+      windows_cpu_matrix: ${{ steps.matrix.outputs.windows_cpu_matrix }}
+      windows_cuda_matrix: ${{ steps.matrix.outputs.windows_cuda_matrix }}
       backends_cpu: ${{ steps.parse.outputs.backends_cpu }}
       backends_vulkan: ${{ steps.parse.outputs.backends_vulkan }}
       backends_cuda: ${{ steps.parse.outputs.backends_cuda }}
@@ -141,11 +150,23 @@ jobs:
           echo "create_release=${create_release}" >> "$GITHUB_OUTPUT"
           echo "Resolved: ${repo_full} @ ${ref} (PR=${is_pr})"
 
-      - name: Parse platforms & backends
+      - name: Parse platforms, archs & backends
         id: parse
         run: |
           platforms="${{ github.event.inputs.platforms }}"
           echo "platforms=${platforms}" >> "$GITHUB_OUTPUT"
+
+          archs="${{ github.event.inputs.archs }}"
+          if echo "$archs" | grep -qi "x64"; then
+            echo "arch_x64=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "arch_x64=false" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$archs" | grep -qi "arm64"; then
+            echo "arch_arm64=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "arch_arm64=false" >> "$GITHUB_OUTPUT"
+          fi
 
           backends="${{ github.event.inputs.backends }}"
           for b in cpu vulkan cuda metal rocm sycl openvino android; do
@@ -156,7 +177,33 @@ jobs:
             fi
           done
           echo "Active platforms: $platforms"
+          echo "Active archs: $archs"
           echo "Active backends: $backends"
+
+      - name: Generate Windows matrices
+        id: matrix
+        run: |
+          archs="${{ github.event.inputs.archs }}"
+
+          # Windows CPU matrix
+          cpu_matrix='{"include":[]}'
+          if echo "$archs" | grep -qi "x64"; then
+            cpu_matrix=$(echo "$cpu_matrix" | jq '.include += [{"arch":"x64"}]')
+          fi
+          if echo "$archs" | grep -qi "arm64"; then
+            cpu_matrix=$(echo "$cpu_matrix" | jq '.include += [{"arch":"arm64"}]')
+          fi
+          echo "windows_cpu_matrix=$(echo "$cpu_matrix" | jq -c .)" >> "$GITHUB_OUTPUT"
+
+          # Windows CUDA matrix（仅 x64）
+          cuda_matrix='{"include":[]}'
+          if echo "$archs" | grep -qi "x64"; then
+            cuda_matrix=$(echo "$cuda_matrix" | jq '.include += [{"cuda":"12.4.1","arch":"x64"},{"cuda":"13.3.0","arch":"x64"}]')
+          fi
+          echo "windows_cuda_matrix=$(echo "$cuda_matrix" | jq -c .)" >> "$GITHUB_OUTPUT"
+
+          echo "CPU matrix: $(echo "$cpu_matrix" | jq -c .)"
+          echo "CUDA matrix: $(echo "$cuda_matrix" | jq -c .)"
 
       - name: Checkout target repo (for version detection)
         uses: actions/checkout@v4
@@ -448,17 +495,14 @@ jobs:
           path: ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-android-arm64.tar.gz
 
   # ═══════════════════════════════════════════
-  # 6. Windows CPU 编译（x64 / arm64）
+  # 6. Windows CPU 编译（动态矩阵：x64 / arm64）
   # ═══════════════════════════════════════════
   windows-cpu:
     needs: prepare
-    if: ${{ contains(needs.prepare.outputs.platforms, 'windows') && needs.prepare.outputs.backends_cpu == 'true' }}
+    if: ${{ contains(needs.prepare.outputs.platforms, 'windows') && needs.prepare.outputs.backends_cpu == 'true' && needs.prepare.outputs.windows_cpu_matrix != '{"include":[]}' }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - arch: 'x64'
-          - arch: 'arm64'
+      matrix: ${{ fromJSON(needs.prepare.outputs.windows_cpu_matrix) }}
     runs-on: windows-latest
     env:
       CMAKE_ARGS: ${{ github.event.inputs.cmake_args }}
@@ -486,6 +530,7 @@ jobs:
             -D CMAKE_TOOLCHAIN_FILE=cmake/${{ matrix.arch }}-windows-llvm.cmake ^
             -DGGML_NATIVE=OFF ^
             -DGGML_BACKEND_DL=ON ^
+            -DBUILD_SHARED_LIBS=ON ^
             -DGGML_CPU_ALL_VARIANTS=${{ matrix.arch == 'x64' && 'ON' || 'OFF' }} ^
             -DGGML_OPENMP=ON ^
             ${{ env.CMAKE_ARGS }}
@@ -493,7 +538,10 @@ jobs:
 
       - name: Pack artifacts
         run: |
-          7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-cpu-${{ matrix.arch }}.zip .\build\bin\Release\*
+          mkdir .\dist
+          copy .\build\bin\Release\*.exe .\dist\
+          copy .\build\bin\Release\*.dll .\dist\
+          7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-cpu-${{ matrix.arch }}.zip .\dist\*
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -502,19 +550,14 @@ jobs:
           path: ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-cpu-${{ matrix.arch }}.zip
 
   # ═══════════════════════════════════════════
-  # 7. Windows CUDA 编译
+  # 7. Windows CUDA 编译（动态矩阵：仅 x64）
   # ═══════════════════════════════════════════
   windows-cuda:
     needs: prepare
-    if: ${{ contains(needs.prepare.outputs.platforms, 'windows') && needs.prepare.outputs.backends_cuda == 'true' }}
+    if: ${{ contains(needs.prepare.outputs.platforms, 'windows') && needs.prepare.outputs.backends_cuda == 'true' && needs.prepare.outputs.windows_cuda_matrix != '{"include":[]}' }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - cuda: '12.4.1'
-            arch: 'x64'
-          - cuda: '13.3.0'
-            arch: 'x64'
+      matrix: ${{ fromJSON(needs.prepare.outputs.windows_cuda_matrix) }}
     runs-on: windows-2022
     env:
       CMAKE_ARGS: ${{ github.event.inputs.cmake_args }}
@@ -548,6 +591,7 @@ jobs:
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
           cmake -S . -B build -G "Ninja Multi-Config" ^
             -DGGML_BACKEND_DL=ON ^
+            -DBUILD_SHARED_LIBS=ON ^
             -DGGML_NATIVE=OFF ^
             -DGGML_CPU=OFF ^
             -DGGML_CUDA=ON ^
@@ -556,7 +600,10 @@ jobs:
 
       - name: Pack artifacts
         run: |
-          7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-cuda-${{ matrix.cuda }}-${{ matrix.arch }}.zip .\build\bin\Release\*
+          mkdir .\dist
+          copy .\build\bin\Release\*.exe .\dist\
+          copy .\build\bin\Release\*.dll .\dist\
+          7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-cuda-${{ matrix.cuda }}-${{ matrix.arch }}.zip .\dist\*
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -565,11 +612,11 @@ jobs:
           path: ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-cuda-${{ matrix.cuda }}-${{ matrix.arch }}.zip
 
   # ═══════════════════════════════════════════
-  # 8. Windows Vulkan 编译
+  # 8. Windows Vulkan 编译（仅 x64）
   # ═══════════════════════════════════════════
   windows-vulkan:
     needs: prepare
-    if: ${{ contains(needs.prepare.outputs.platforms, 'windows') && needs.prepare.outputs.backends_vulkan == 'true' }}
+    if: ${{ contains(needs.prepare.outputs.platforms, 'windows') && needs.prepare.outputs.backends_vulkan == 'true' && needs.prepare.outputs.arch_x64 == 'true' }}
     runs-on: windows-latest
     env:
       VULKAN_VERSION: "1.4.357.0"
@@ -593,15 +640,21 @@ jobs:
         run: choco install ninja
 
       - name: Build
+        shell: cmd
         run: |
-          cmake -S . -B build -G "Ninja Multi-Config" `
-            -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_CPU=OFF -DGGML_BACKEND_DL=ON `
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_CPU=OFF -DGGML_BACKEND_DL=ON ^
+            -DBUILD_SHARED_LIBS=ON ^
             ${{ env.CMAKE_ARGS }}
           cmake --build build --config Release
 
       - name: Pack artifacts
         run: |
-          7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-vulkan-x64.zip .\build\bin\Release\*
+          mkdir .\dist
+          copy .\build\bin\Release\*.exe .\dist\
+          copy .\build\bin\Release\*.dll .\dist\
+          7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-vulkan-x64.zip .\dist\*
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -651,6 +704,7 @@ jobs:
             - 分支/Ref: `${{ needs.prepare.outputs.ref }}`
             - PR 编号: `${{ needs.prepare.outputs.pr_display }}`
             - 编译平台: `${{ github.event.inputs.platforms }}`
+            - 编译架构: `${{ github.event.inputs.archs }}`
             - 编译后端: `${{ github.event.inputs.backends }}`
           files: release/*
           draft: false
