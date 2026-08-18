@@ -106,22 +106,18 @@ jobs:
           pr_input="${{ github.event.inputs.pr_number }}"
           is_pr="false"
           create_release="${{ github.event.inputs.create_release }}"
-
           if [ -n "$pr_input" ]; then
             repo_full="${{ github.event.inputs.repo_url }}"
             repo_full="${repo_full#https://github.com/}"
             repo_full="${repo_full%.git}"
             echo "Fetching PR #${pr_input} from ${repo_full} ..."
-
             pr_data=$(curl -sL -H "Authorization: Bearer ${GH_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${repo_full}/pulls/${pr_input}")
-
             if echo "$pr_data" | jq -e '.message' >/dev/null 2>&1; then
               echo "ERROR: GitHub API returned: $(echo "$pr_data" | jq -r '.message')"
               exit 1
             fi
-
             repo_url=$(echo "$pr_data" | jq -r '.head.repo.clone_url')
             ref=$(echo "$pr_data" | jq -r '.head.ref')
             pr_number="${pr_input}"
@@ -133,11 +129,9 @@ jobs:
             pr_number=""
             echo "Mode: manual dispatch"
           fi
-
           repo_full="${repo_url#https://github.com/}"
           repo_full="${repo_full%.git}"
           repo_name=$(basename "$repo_full")
-
           echo "repo_url=${repo_url}" >> "$GITHUB_OUTPUT"
           echo "repo_full=${repo_full}" >> "$GITHUB_OUTPUT"
           echo "repo_name=${repo_name}" >> "$GITHUB_OUTPUT"
@@ -147,13 +141,11 @@ jobs:
           echo "is_pr=${is_pr}" >> "$GITHUB_OUTPUT"
           echo "create_release=${create_release}" >> "$GITHUB_OUTPUT"
           echo "Resolved: ${repo_full} @ ${ref} (PR=${is_pr})"
-
       - name: Parse platforms, archs & backends
         id: parse
         run: |
           platforms="${{ github.event.inputs.platforms }}"
           echo "platforms=${platforms}" >> "$GITHUB_OUTPUT"
-
           archs="${{ github.event.inputs.archs }}"
           if echo "$archs" | grep -qi "x64"; then
             echo "arch_x64=true" >> "$GITHUB_OUTPUT"
@@ -165,7 +157,6 @@ jobs:
           else
             echo "arch_arm64=false" >> "$GITHUB_OUTPUT"
           fi
-
           backends="${{ github.event.inputs.backends }}"
           for b in cpu vulkan cuda metal rocm sycl openvino android; do
             if echo "$backends" | grep -qi "$b"; then
@@ -177,7 +168,6 @@ jobs:
           echo "Active platforms: $platforms"
           echo "Active archs: $archs"
           echo "Active backends: $backends"
-
       - name: Generate macOS matrix
         id: macos_matrix
         run: |
@@ -186,11 +176,10 @@ jobs:
             matrix=$(echo "$matrix" | jq '.include += [{"build":"arm64","arch":"arm64","os":"macos-latest","defines":"-DGGML_METAL=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3"}]')
           fi
           if [ "${{ steps.parse.outputs.arch_x64 }}" = "true" ]; then
-            matrix=$(echo "$matrix" | jq '.include += [{"build":"x64","arch":"x64","os":"macos-13","defines":"-DGGML_METAL=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3"}]')
+            matrix=$(echo "$matrix" | jq '.include += [{"build":"x64","arch":"x64","os":"macos-15-intel","defines":"-DGGML_METAL=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3"}]')
           fi
           echo "macos_matrix=$(echo "$matrix" | jq -c .)" >> "$GITHUB_OUTPUT"
           echo "macOS matrix: $(echo "$matrix" | jq -c .)"
-
       - name: Generate Linux CPU matrix
         id: linux_cpu_matrix
         run: |
@@ -203,7 +192,6 @@ jobs:
           fi
           echo "linux_cpu_matrix=$(echo "$matrix" | jq -c .)" >> "$GITHUB_OUTPUT"
           echo "Linux CPU matrix: $(echo "$matrix" | jq -c .)"
-
       - name: Generate Linux Vulkan matrix
         id: linux_vulkan_matrix
         run: |
@@ -216,12 +204,10 @@ jobs:
           fi
           echo "linux_vulkan_matrix=$(echo "$matrix" | jq -c .)" >> "$GITHUB_OUTPUT"
           echo "Linux Vulkan matrix: $(echo "$matrix" | jq -c .)"
-
       - name: Generate Windows matrices
         id: matrix
         run: |
           archs="${{ github.event.inputs.archs }}"
-
           cpu_matrix='{"include":[]}'
           if echo "$archs" | grep -qi "x64"; then
             cpu_matrix=$(echo "$cpu_matrix" | jq '.include += [{"arch":"x64"}]')
@@ -230,16 +216,13 @@ jobs:
             cpu_matrix=$(echo "$cpu_matrix" | jq '.include += [{"arch":"arm64"}]')
           fi
           echo "windows_cpu_matrix=$(echo "$cpu_matrix" | jq -c .)" >> "$GITHUB_OUTPUT"
-
           cuda_matrix='{"include":[]}'
           if echo "$archs" | grep -qi "x64"; then
             cuda_matrix=$(echo "$cuda_matrix" | jq '.include += [{"cuda":"12.4","arch":"x64"},{"cuda":"13.3","arch":"x64"}]')
           fi
           echo "windows_cuda_matrix=$(echo "$cuda_matrix" | jq -c .)" >> "$GITHUB_OUTPUT"
-
           echo "CPU matrix: $(echo "$cpu_matrix" | jq -c .)"
           echo "CUDA matrix: $(echo "$cuda_matrix" | jq -c .)"
-
       - name: Checkout target repo (for version detection)
         uses: actions/checkout@v4
         with:
@@ -263,7 +246,6 @@ jobs:
             short_sha=$(git rev-parse --short HEAD)
             tag="${short_sha}"
           fi
-
           # 追加 8 位时间戳编码（36 进制：0-9a-z）
           epoch=$(date +%s)
           encode36() {
@@ -283,13 +265,11 @@ jobs:
             ts36="0${ts36}"
           done
           tag="${tag}-${ts36}"
-
           if [ "${{ steps.resolve.outputs.is_pr }}" = "true" ] && [ -n "${{ steps.resolve.outputs.pr_number }}" ]; then
             tag="pr-${{ steps.resolve.outputs.pr_number }}-${tag}"
           fi
           echo "tag_name=${tag}" >> "$GITHUB_OUTPUT"
           echo "Resolved tag: ${tag}"
-
   # ═══════════════════════════════════════════
   # 2. macOS 编译（CPU + Metal）
   # ═══════════════════════════════════════════
@@ -326,14 +306,12 @@ jobs:
             -DLLAMA_FATAL_WARNINGS=ON \
             ${{ env.CMAKE_ARGS }}
           cmake --build build --config Release -j $(sysctl -n hw.logicalcpu)
-
       - name: Pack artifacts
         run: |
           cp LICENSE ./build/bin/ 2>/dev/null || true
           tar -czvf ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-macos-${{ matrix.build }}.tar.gz \
             -s ",^\\.,${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}," \
             -C ./build/bin .
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -364,14 +342,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential libssl-dev
-
       - name: Toolchain workaround (GCC 14)
         if: ${{ contains(matrix.os, 'ubuntu-24.04') }}
         run: |
           sudo apt-get install -y gcc-14 g++-14
           echo "CC=gcc-14" >> "$GITHUB_ENV"
           echo "CXX=g++-14" >> "$GITHUB_ENV"
-
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -389,14 +365,12 @@ jobs:
             -DLLAMA_FATAL_WARNINGS=ON \
             ${{ env.CMAKE_ARGS }}
           cmake --build build --config Release -j $(nproc)
-
       - name: Pack artifacts
         run: |
           cp LICENSE ./build/bin/ 2>/dev/null || true
           tar -czvf ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-linux-${{ matrix.build }}.tar.gz \
             --transform "s,^\\.,${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}," \
             -C ./build/bin .
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -436,7 +410,6 @@ jobs:
             echo "CC=gcc-14" >> "$GITHUB_ENV"
             echo "CXX=g++-14" >> "$GITHUB_ENV"
           fi
-
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -454,14 +427,12 @@ jobs:
             -DGGML_VULKAN=ON \
             ${{ env.CMAKE_ARGS }}
           cmake --build build --config Release -j $(nproc)
-
       - name: Pack artifacts
         run: |
           cp LICENSE ./build/bin/ 2>/dev/null || true
           tar -czvf ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-linux-vulkan-${{ matrix.build }}.tar.gz \
             --transform "s,^\\.,${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}," \
             -C ./build/bin .
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -500,7 +471,6 @@ jobs:
         run: |
           sdkmanager "ndk;${{ env.NDK_VERSION }}"
           echo "ANDROID_NDK=${ANDROID_SDK_ROOT}/ndk/${{ env.NDK_VERSION }}" >> "$GITHUB_ENV"
-
       - name: Build
         run: |
           cmake -B build \
@@ -515,14 +485,12 @@ jobs:
             -DGGML_OPENMP=OFF \
             ${{ env.CMAKE_ARGS }}
           cmake --build build --config Release -j $(nproc)
-
       - name: Pack artifacts
         run: |
           cp LICENSE ./build/bin/ 2>/dev/null || true
           tar -czvf ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-android-arm64.tar.gz \
             --transform "s,^\\.,${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}," \
             -C ./build/bin .
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -570,14 +538,12 @@ jobs:
             -DGGML_OPENMP=ON ^
             ${{ env.CMAKE_ARGS }}
           cmake --build build --config Release
-
       - name: Pack artifacts
         run: |
           mkdir .\dist
           copy .\build\bin\Release\*.exe .\dist\
           copy .\build\bin\Release\*.dll .\dist\
           7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-cpu-${{ matrix.arch }}.zip .\dist\*
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -632,14 +598,12 @@ jobs:
             -DGGML_CUDA=ON ^
             ${{ env.CMAKE_ARGS }}
           cmake --build build --config Release -j %NUMBER_OF_PROCESSORS%
-
       - name: Pack artifacts
         run: |
           mkdir .\dist
           copy .\build\bin\Release\*.exe .\dist\
           copy .\build\bin\Release\*.dll .\dist\
           7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-cuda-${{ matrix.cuda }}-${{ matrix.arch }}.zip .\dist\*
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -676,7 +640,6 @@ jobs:
           & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
           Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
           Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\bin"
-
       - name: Install Ninja
         run: choco install ninja
 
@@ -689,14 +652,12 @@ jobs:
             -DBUILD_SHARED_LIBS=ON ^
             ${{ env.CMAKE_ARGS }}
           cmake --build build --config Release
-
       - name: Pack artifacts
         run: |
           mkdir .\dist
           copy .\build\bin\Release\*.exe .\dist\
           copy .\build\bin\Release\*.dll .\dist\
           7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-vulkan-x64.zip .\dist\*
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -726,15 +687,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential libssl-dev git cmake wget
-
       - name: Setup ROCm
         run: |
           sudo mkdir -p /etc/apt/keyrings
           wget -qO - https://repo.radeon.com/rocm/rocm.gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/rocm.gpg
           echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/7.2.1 jammy main" | sudo tee /etc/apt/sources.list.d/rocm.list
+          sudo tee /etc/apt/preferences.d/rocm-pin-600 << EOF
+Package: *
+Pin: release o=repo.radeon.com
+Pin-Priority: 600
+EOF
           sudo apt-get update
           sudo apt-get install -y rocm-hip-sdk
-
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -755,7 +719,6 @@ jobs:
             -DGGML_HIP_ROCWMMA_FATTN=ON \
             ${{ env.CMAKE_ARGS }}
           cmake --build build --config Release -j $(nproc)
-
       - name: ccache-clear
         if: always()
         uses: ggml-org/llama.cpp/.github/actions/ccache-clear@master
@@ -768,7 +731,6 @@ jobs:
           tar -czvf ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-linux-rocm-x64.tar.gz \
             --transform "s,^\\.,${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}," \
             -C ./build/bin .
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -801,14 +763,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential libssl-dev
-
       - name: Download & Install oneAPI
         shell: bash
         run: |
           cd /tmp
           wget https://registrationcenter-download.intel.com/akdlm/IRC_NAS/56f7923a-adb8-43f3-8b02-2b60fcac8cab/intel-deep-learning-essentials-2025.3.3.16_offline.sh -O intel-deep-learning-essentials_offline.sh
           sudo bash intel-deep-learning-essentials_offline.sh -s -a --silent --eula accept
-
       - name: Install Level Zero SDK
         shell: bash
         run: |
@@ -816,7 +776,6 @@ jobs:
           wget -q "https://github.com/oneapi-src/level-zero/releases/download/v${LEVEL_ZERO_VERSION}/level-zero_${LEVEL_ZERO_VERSION}%2B${LEVEL_ZERO_UBUNTU_VERSION}_amd64.deb" -O level-zero.deb
           wget -q "https://github.com/oneapi-src/level-zero/releases/download/v${LEVEL_ZERO_VERSION}/level-zero-devel_${LEVEL_ZERO_VERSION}%2B${LEVEL_ZERO_UBUNTU_VERSION}_amd64.deb" -O level-zero-devel.deb
           sudo apt-get install -y ./level-zero.deb ./level-zero-devel.deb
-
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -834,10 +793,8 @@ jobs:
             -DCMAKE_CXX_COMPILER=icpx \
             -DLLAMA_OPENSSL=OFF \
             -DGGML_NATIVE=OFF \
-            -DGGML_CPU_ALL_VARIANTS=ON \
             ${{ env.CMAKE_ARGS }}
           cmake --build build --config Release -j $(nproc)
-
       - name: ccache-clear
         if: always()
         uses: ggml-org/llama.cpp/.github/actions/ccache-clear@master
@@ -850,7 +807,6 @@ jobs:
           tar -czvf ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-linux-sycl-x64.tar.gz \
             --transform "s,^\\.,${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}," \
             -C ./build/bin .
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -883,7 +839,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential libssl-dev libtbb12 cmake ninja-build python3-pip
           sudo apt-get install -y ocl-icd-opencl-dev opencl-headers opencl-clhpp-headers intel-opencl-icd
-
       - name: Use OpenVINO Toolkit Cache
         uses: actions/cache@v5
         id: cache-openvino
@@ -904,7 +859,6 @@ jobs:
           cd ./openvino_toolkit
           chmod +x ./install_dependencies/install_openvino_dependencies.sh
           echo "Y" | sudo -E ./install_dependencies/install_openvino_dependencies.sh
-
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -919,10 +873,8 @@ jobs:
             -DGGML_OPENVINO=ON \
             -DCMAKE_INSTALL_RPATH='$ORIGIN' \
             -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
-            -DGGML_CPU_ALL_VARIANTS=ON \
             ${{ env.CMAKE_ARGS }}
           cmake --build build/ReleaseOV --config Release --parallel
-
       - name: ccache-clear
         if: always()
         uses: ggml-org/llama.cpp/.github/actions/ccache-clear@master
@@ -934,7 +886,6 @@ jobs:
           dest=./build/ReleaseOV/bin
           OPENVINO_ROOT=./openvino_toolkit
           ov_lib="$OPENVINO_ROOT/runtime/lib/intel64"
-
           cp -P "$ov_lib"/libopenvino.so* \
                 "$ov_lib"/libopenvino_c.so* \
                 "$ov_lib"/libopenvino_*_plugin.so \
@@ -945,11 +896,9 @@ jobs:
           cp "$ov_lib"/cache.json "$dest" 2>/dev/null || true
           cp -r "$OPENVINO_ROOT"/docs/licensing "$dest"/openvino-licensing
           cp LICENSE "$dest"
-
           tar -czvf ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-linux-openvino-${{ env.OPENVINO_VERSION_MAJOR }}-x64.tar.gz \
             --transform "s,^\\.,${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}," \
             -C "$dest" .
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -987,7 +936,6 @@ jobs:
           curl -o rocwmma.deb "https://repo.radeon.com/rocm/apt/7.2.1/pool/main/r/rocwmma-dev/rocwmma-dev_2.2.0.70201-81~24.04_amd64.deb"
           7z x rocwmma.deb
           7z x data.tar
-
       - name: Cache ROCm Installation
         uses: actions/cache@v5
         id: cache-rocm
@@ -995,18 +943,31 @@ jobs:
           path: C:\Program Files\AMD\ROCm
           key: cache-gha-rocm-${{ env.HIPSDK_INSTALLER_VERSION }}-${{ runner.os }}
 
-      - name: Setup ROCm
+      - name: Install ROCm
         if: steps.cache-rocm.outputs.cache-hit != 'true'
-        uses: ggml-org/llama.cpp/.github/actions/windows-setup-rocm@master
-        with:
-          version: ${{ env.HIPSDK_INSTALLER_VERSION }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          write-host "Downloading AMD HIP SDK Installer"
+          Invoke-WebRequest -Uri "https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-${{ env.HIPSDK_INSTALLER_VERSION }}-Win11-For-HIP.exe" -OutFile "${env:RUNNER_TEMP}\rocm-install.exe"
+          write-host "Installing AMD HIP SDK"
+          $proc = Start-Process "${env:RUNNER_TEMP}\rocm-install.exe" -ArgumentList '-install' -NoNewWindow -PassThru
+          $completed = $proc.WaitForExit(600000)
+          if (-not $completed) {
+              Write-Error "ROCm installation timed out after 10 minutes. Killing the process"
+              $proc.Kill()
+              exit 1
+          }
+          if ($proc.ExitCode -ne 0) {
+              Write-Error "ROCm installation failed with exit code $($proc.ExitCode)"
+              exit 1
+          }
+          write-host "Completed AMD HIP SDK installation"
 
       - name: Verify ROCm
         run: |
           $clangPath = Get-ChildItem 'C:\Program Files\AMD\ROCm\*\bin\clang.exe' | Select-Object -First 1
           if (-not $clangPath) { Write-Error "ROCm installation not found"; exit 1 }
           & $clangPath.FullName --version
-
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -1037,7 +998,6 @@ jobs:
           cp "${env:HIP_PATH}\bin\rocblas.dll" "build\bin\"
           cp "${env:HIP_PATH}\bin\rocblas\library\*" "build\bin\rocblas\library\"
           cp "${env:HIP_PATH}\bin\hipblaslt\library\*" "build\bin\hipblaslt\library\"
-
       - name: ccache-clear
         if: always()
         uses: ggml-org/llama.cpp/.github/actions/ccache-clear@master
@@ -1047,7 +1007,6 @@ jobs:
       - name: Pack artifacts
         run: |
           7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-hip-${{ matrix.name }}-x64.zip .\build\bin\*
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -1082,14 +1041,12 @@ jobs:
         shell: bash
         run: |
           scripts/install-oneapi.bat $WINDOWS_BASEKIT_URL $WINDOWS_DPCPP_MKL
-
       - name: Install Level Zero SDK
         shell: pwsh
         run: |
           Invoke-WebRequest -Uri "${{ env.LEVEL_ZERO_SDK_URL }}" -OutFile "level-zero-win-sdk.zip"
           Expand-Archive -Path "level-zero-win-sdk.zip" -DestinationPath "C:/level-zero-sdk" -Force
           "LEVEL_ZERO_V1_SDK_PATH=C:/level-zero-sdk" | Out-File -FilePath $env:GITHUB_ENV -Append
-
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
@@ -1107,7 +1064,6 @@ jobs:
             -DGGML_CPU=OFF -DGGML_SYCL=ON ^
             ${{ env.CMAKE_ARGS }}
           cmake --build build --target ggml-sycl -j %NUMBER_OF_PROCESSORS%
-
       - name: ccache-clear
         if: always()
         uses: ggml-org/llama.cpp/.github/actions/ccache-clear@master
@@ -1139,7 +1095,6 @@ jobs:
           cp "${{ env.ONEAPI_ROOT }}/tcm/latest/bin/libhwloc-15.dll" ./build/bin
           cp "${{ env.ONEAPI_ROOT }}/umf/latest/bin/umf.dll" ./build/bin
           7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-sycl-x64.zip ./build/bin/*
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -1194,7 +1149,6 @@ jobs:
           git clone https://github.com/microsoft/vcpkg C:\vcpkg
           C:\vcpkg\bootstrap-vcpkg.bat
           C:\vcpkg\vcpkg install opencl
-
       - name: Build
         id: cmake_build
         shell: cmd
@@ -1212,7 +1166,6 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake ^
             ${{ env.CMAKE_ARGS }}
           cmake --build build\ReleaseOV --config Release -- /m
-
       - name: ccache-clear
         if: always()
         uses: ggml-org/llama.cpp/.github/actions/ccache-clear@master
@@ -1235,7 +1188,6 @@ jobs:
           Copy-Item -Path (Join-Path $OPENVINO_ROOT 'docs\licensing\*') -Destination $licensingDest -Recurse -Force
           Copy-Item LICENSE $dest
           7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-openvino-${{ env.OPENVINO_VERSION_MAJOR }}-x64.zip $dest\*
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -1291,7 +1243,6 @@ jobs:
           mv artifacts/*.zip release/ 2>/dev/null || true
           mv artifacts/*.tar.gz release/ 2>/dev/null || true
           ls -lh release/
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
