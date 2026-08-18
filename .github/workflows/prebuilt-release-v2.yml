@@ -1,4 +1,4 @@
-name: Prebuilt Release
+name: Prebuilt Release(v2)
 
 # 通用预编译工作流
 # 支持自定义指定任意 Git 仓库、分支、Tag、Commit 或 PR 编号
