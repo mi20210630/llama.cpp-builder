@@ -593,7 +593,7 @@ jobs:
             -DGGML_BACKEND_DL=ON ^
             -DBUILD_SHARED_LIBS=ON ^
             -DGGML_NATIVE=OFF ^
-            -DGGML_CPU=OFF ^
+            -DGGML_CPU_ALL_VARIANTS=ON ^
             -DGGML_CUDA=ON ^
             ${{ env.CMAKE_ARGS }}
           cmake --build build --config Release -j %NUMBER_OF_PROCESSORS%
@@ -644,7 +644,7 @@ jobs:
         run: |
           call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
           cmake -S . -B build -G "Ninja Multi-Config" ^
-            -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_CPU=OFF -DGGML_BACKEND_DL=ON ^
+            -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_BACKEND_DL=ON ^
             -DBUILD_SHARED_LIBS=ON ^
             ${{ env.CMAKE_ARGS }}
           cmake --build build --config Release
