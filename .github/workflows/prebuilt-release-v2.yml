@@ -837,8 +837,8 @@ jobs:
           cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/ur_adapter_opencl.dll" ./build/bin
           cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/ur_loader.dll" ./build/bin
           cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/ur_win_proxy_loader.dll" ./build/bin
-          $ZE_LOADER_DLL=$(find "${{ env.ONEAPI_ROOT }}" "$env:LEVEL_ZERO_V1_SDK_PATH" -iname ze_loader.dll -print -quit 2>/dev/null || true)
-          if ($ZE_LOADER_DLL) { cp "$ZE_LOADER_DLL" ./build/bin }
+          $ZE_LOADER_DLL = Get-ChildItem -Path "${{ env.ONEAPI_ROOT }}", "$env:LEVEL_ZERO_V1_SDK_PATH" -Filter "ze_loader.dll" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($ZE_LOADER_DLL) { Copy-Item $ZE_LOADER_DLL.FullName ./build/bin }
           cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/sycl8.dll" ./build/bin
           cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/svml_dispmd.dll" ./build/bin
           cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/libmmd.dll" ./build/bin
