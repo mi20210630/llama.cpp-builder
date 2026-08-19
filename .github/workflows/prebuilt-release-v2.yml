@@ -700,157 +700,175 @@ jobs:
           key: prebuilt-windows-${{ matrix.backend }}-${{ matrix.arch }}-${{ matrix.cuda || 'none' }}-${{ needs.prepare.outputs.ref }}
           max-size: 2G
 
-      - name: Build
+      # ─── Build steps (per backend, correct shell) ───
+      - name: Build (CPU)
+        if: ${{ matrix.backend == 'cpu' }}
         run: |
-          switch ("${{ matrix.backend }}") {
-            "cpu" {
-              cmake -S . -B build -G "Ninja Multi-Config" `
-                -D CMAKE_TOOLCHAIN_FILE=cmake/${{ matrix.arch }}-windows-llvm.cmake `
-                -DGGML_NATIVE=OFF `
-                -DGGML_BACKEND_DL=ON `
-                -DBUILD_SHARED_LIBS=ON `
-                -DGGML_CPU_ALL_VARIANTS=${{ matrix.arch == 'x64' && 'ON' || 'OFF' }} `
-                -DGGML_OPENMP=ON `
-                ${{ env.CMAKE_ARGS }}
-              cmake --build build --config Release
-            }
-            "cuda" {
-              call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
-              cmake -S . -B build -G "Ninja Multi-Config" `
-                -DGGML_BACKEND_DL=ON `
-                -DBUILD_SHARED_LIBS=ON `
-                -DGGML_NATIVE=OFF `
-                -DGGML_CPU_ALL_VARIANTS=ON `
-                -DGGML_CUDA=ON `
-                ${{ env.CMAKE_ARGS }}
-              cmake --build build --config Release -j %NUMBER_OF_PROCESSORS%
-            }
-            "vulkan" {
-              call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
-              cmake -S . -B build -G "Ninja Multi-Config" `
-                -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_BACKEND_DL=ON `
-                -DBUILD_SHARED_LIBS=ON `
-                ${{ env.CMAKE_ARGS }}
-              cmake --build build --config Release
-            }
-            "hip" {
-              $env:HIP_PATH=$(Resolve-Path 'C:\Program Files\AMD\ROCm\*\bin\clang.exe' | split-path | split-path)
-              $env:CMAKE_PREFIX_PATH="${env:HIP_PATH}"
-              cmake -G "Unix Makefiles" -B build -S . `
-                -DCMAKE_C_COMPILER="${env:HIP_PATH}\bin\clang.exe" `
-                -DCMAKE_CXX_COMPILER="${env:HIP_PATH}\bin\clang++.exe" `
-                -DCMAKE_CXX_FLAGS="-I$($PWD.Path.Replace('\', '/'))/opt/rocm-7.2.1/include/ -Wno-ignored-attributes -Wno-nested-anon-types" `
-                -DCMAKE_BUILD_TYPE=Release `
-                -DGGML_BACKEND_DL=ON `
-                -DGGML_NATIVE=OFF `
-                -DGGML_CPU=OFF `
-                -DGPU_TARGETS="gfx1150;gfx1151;gfx1200;gfx1201;gfx1100;gfx1101;gfx1102;gfx1030;gfx1031;gfx1032" `
-                -DGGML_HIP_ROCWMMA_FATTN=ON `
-                -DGGML_HIP=ON `
-                ${{ env.CMAKE_ARGS }}
-              cmake --build build --target ggml-hip -j ${env:NUMBER_OF_PROCESSORS}
-              md "build\bin\rocblas\library\"
-              md "build\bin\hipblaslt\library"
-              cp "${env:HIP_PATH}\bin\libhipblas.dll" "build\bin\"
-              cp "${env:HIP_PATH}\bin\libhipblaslt.dll" "build\bin\"
-              cp "${env:HIP_PATH}\bin\rocblas.dll" "build\bin\"
-              cp "${env:HIP_PATH}\bin\rocblas\library\*" "build\bin\rocblas\library\"
-              cp "${env:HIP_PATH}\bin\hipblaslt\library\*" "build\bin\hipblaslt\library\"
-            }
-            "sycl" {
-              call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 --force
-              cmake -G "Ninja" -B build `
-                -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=icx `
-                -DCMAKE_BUILD_TYPE=Release `
-                -DGGML_BACKEND_DL=ON -DBUILD_SHARED_LIBS=ON `
-                -DGGML_CPU=OFF -DGGML_SYCL=ON `
-                ${{ env.CMAKE_ARGS }}
-              cmake --build build --target ggml-sycl -j %NUMBER_OF_PROCESSORS%
-            }
-            "openvino" {
-              for /d %%i in (openvino_toolkit\*) do set OPENVINO_ROOT=%%i
-              if not exist "%OPENVINO_ROOT%\runtime\cmake\OpenVINOConfig.cmake" (
-                  echo ERROR: OpenVINOConfig.cmake not found
-                  exit /b 1
-              )
-              call "%OPENVINO_ROOT%\setupvars.bat"
-              cmake -B build\ReleaseOV -G "Visual Studio 17 2022" `
-                -A x64 `
-                -DCMAKE_BUILD_TYPE=Release `
-                -DGGML_OPENVINO=ON `
-                -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `
-                ${{ env.CMAKE_ARGS }}
-              cmake --build build\ReleaseOV --config Release -- /m
-            }
-          }
-        shell: pwsh
+          cmake -S . -B build -G "Ninja Multi-Config" `
+            -D CMAKE_TOOLCHAIN_FILE=cmake/${{ matrix.arch }}-windows-llvm.cmake `
+            -DGGML_NATIVE=OFF `
+            -DGGML_BACKEND_DL=ON `
+            -DBUILD_SHARED_LIBS=ON `
+            -DGGML_CPU_ALL_VARIANTS=${{ matrix.arch == 'x64' && 'ON' || 'OFF' }} `
+            -DGGML_OPENMP=ON `
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release
 
-      - name: Pack artifacts
+      - name: Build (CUDA)
+        if: ${{ matrix.backend == 'cuda' }}
+        shell: cmd
         run: |
-          switch ("${{ matrix.backend }}") {
-            "cpu" {
-              mkdir .\dist
-              copy .\build\bin\Release\*.exe .\dist\
-              copy .\build\bin\Release\*.dll .\dist\
-              7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-cpu-${{ matrix.arch }}.zip .\dist\*
-            }
-            "cuda" {
-              mkdir .\dist
-              copy .\build\bin\Release\*.exe .\dist\
-              copy .\build\bin\Release\*.dll .\dist\
-              7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-cuda-${{ matrix.cuda }}-${{ matrix.arch }}.zip .\dist\*
-            }
-            "vulkan" {
-              mkdir .\dist
-              copy .\build\bin\Release\*.exe .\dist\
-              copy .\build\bin\Release\*.dll .\dist\
-              7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-vulkan-x64.zip .\dist\*
-            }
-            "hip" {
-              7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-hip-${{ matrix.name }}-x64.zip .\build\bin\*
-            }
-            "sycl" {
-              cp "${{ env.ONEAPI_ROOT }}/mkl/latest/bin/mkl_sycl_blas.5.dll" ./build/bin
-              cp "${{ env.ONEAPI_ROOT }}/mkl/latest/bin/mkl_core.2.dll" ./build/bin
-              cp "${{ env.ONEAPI_ROOT }}/mkl/latest/bin/mkl_tbb_thread.2.dll" ./build/bin
-              cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/ur_adapter_level_zero.dll" ./build/bin
-              cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/ur_adapter_level_zero_v2.dll" ./build/bin
-              cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/ur_adapter_opencl.dll" ./build/bin
-              cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/ur_loader.dll" ./build/bin
-              cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/ur_win_proxy_loader.dll" ./build/bin
-              $ZE_LOADER_DLL=$(find "${{ env.ONEAPI_ROOT }}" "$env:LEVEL_ZERO_V1_SDK_PATH" -iname ze_loader.dll -print -quit 2>/dev/null || true)
-              if ($ZE_LOADER_DLL) { cp "$ZE_LOADER_DLL" ./build/bin }
-              cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/sycl8.dll" ./build/bin
-              cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/svml_dispmd.dll" ./build/bin
-              cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/libmmd.dll" ./build/bin
-              cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/libiomp5md.dll" ./build/bin
-              cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/sycl-ls.exe" ./build/bin
-              cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/libsycl-fallback-bfloat16.spv" ./build/bin
-              cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/libsycl-native-bfloat16.spv" ./build/bin
-              cp "${{ env.ONEAPI_ROOT }}/dnnl/latest/bin/dnnl.dll" ./build/bin
-              cp "${{ env.ONEAPI_ROOT }}/tbb/latest/bin/tbb12.dll" ./build/bin
-              cp "${{ env.ONEAPI_ROOT }}/tcm/latest/bin/tcm.dll" ./build/bin
-              cp "${{ env.ONEAPI_ROOT }}/tcm/latest/bin/libhwloc-15.dll" ./build/bin
-              cp "${{ env.ONEAPI_ROOT }}/umf/latest/bin/umf.dll" ./build/bin
-              7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-sycl-x64.zip ./build/bin/*
-            }
-            "openvino" {
-              $OPENVINO_ROOT = (Get-ChildItem -Directory openvino_toolkit | Select-Object -First 1).FullName
-              if (-not $OPENVINO_ROOT) { Write-Error "OpenVINO toolkit folder not found"; exit 1 }
-              $dest = ".\build\ReleaseOV\bin\Release"
-              $ovBin = Join-Path $OPENVINO_ROOT 'runtime\bin\intel64\Release'
-              Copy-Item -Path (Join-Path $ovBin '*.dll') -Destination $dest -Force
-              Copy-Item -Path (Join-Path $ovBin 'cache.json') -Destination $dest -Force
-              $tbbBin = Join-Path $OPENVINO_ROOT 'runtime\3rdparty\tbb\bin'
-              Copy-Item -Path (Join-Path $tbbBin 'tbb*.dll') -Destination $dest -Force
-              $licensingDest = Join-Path $dest 'openvino-licensing'
-              New-Item -ItemType Directory -Force -Path $licensingDest | Out-Null
-              Copy-Item -Path (Join-Path $OPENVINO_ROOT 'docs\licensing\*') -Destination $licensingDest -Recurse -Force
-              Copy-Item LICENSE $dest
-              7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-openvino-${{ env.OPENVINO_VERSION_MAJOR }}-x64.zip $dest\*
-            }
-          }
-        shell: pwsh
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -DGGML_BACKEND_DL=ON ^
+            -DBUILD_SHARED_LIBS=ON ^
+            -DGGML_NATIVE=OFF ^
+            -DGGML_CPU_ALL_VARIANTS=ON ^
+            -DGGML_CUDA=ON ^
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release -j %NUMBER_OF_PROCESSORS%
+
+      - name: Build (Vulkan)
+        if: ${{ matrix.backend == 'vulkan' }}
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_CPU_ALL_VARIANTS=ON -DGGML_BACKEND_DL=ON ^
+            -DBUILD_SHARED_LIBS=ON ^
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release
+
+      - name: Build (HIP)
+        if: ${{ matrix.backend == 'hip' }}
+        run: |
+          $env:HIP_PATH=$(Resolve-Path 'C:\Program Files\AMD\ROCm\*\bin\clang.exe' | split-path | split-path)
+          $env:CMAKE_PREFIX_PATH="${env:HIP_PATH}"
+          cmake -G "Unix Makefiles" -B build -S . `
+            -DCMAKE_C_COMPILER="${env:HIP_PATH}\bin\clang.exe" `
+            -DCMAKE_CXX_COMPILER="${env:HIP_PATH}\bin\clang++.exe" `
+            -DCMAKE_CXX_FLAGS="-I$($PWD.Path.Replace('\', '/'))/opt/rocm-7.2.1/include/ -Wno-ignored-attributes -Wno-nested-anon-types" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DGGML_BACKEND_DL=ON `
+            -DGGML_NATIVE=OFF `
+            -DGGML_CPU=OFF `
+            -DGPU_TARGETS="gfx1150;gfx1151;gfx1200;gfx1201;gfx1100;gfx1101;gfx1102;gfx1030;gfx1031;gfx1032" `
+            -DGGML_HIP_ROCWMMA_FATTN=ON `
+            -DGGML_HIP=ON `
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --target ggml-hip -j ${env:NUMBER_OF_PROCESSORS}
+          md "build\bin\rocblas\library\"
+          md "build\bin\hipblaslt\library"
+          cp "${env:HIP_PATH}\bin\libhipblas.dll" "build\bin\"
+          cp "${env:HIP_PATH}\bin\libhipblaslt.dll" "build\bin\"
+          cp "${env:HIP_PATH}\bin\rocblas.dll" "build\bin\"
+          cp "${env:HIP_PATH}\bin\rocblas\library\*" "build\bin\rocblas\library\"
+          cp "${env:HIP_PATH}\bin\hipblaslt\library\*" "build\bin\hipblaslt\library\"
+
+      - name: Build (SYCL)
+        if: ${{ matrix.backend == 'sycl' }}
+        shell: cmd
+        run: |
+          call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 --force
+          cmake -G "Ninja" -B build ^
+            -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=icx ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DGGML_BACKEND_DL=ON -DBUILD_SHARED_LIBS=ON ^
+            -DGGML_CPU=OFF -DGGML_SYCL=ON ^
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --target ggml-sycl -j %NUMBER_OF_PROCESSORS%
+
+      - name: Build (OpenVINO)
+        if: ${{ matrix.backend == 'openvino' }}
+        shell: cmd
+        run: |
+          for /d %%i in (openvino_toolkit\*) do set OPENVINO_ROOT=%%i
+          if not exist "%OPENVINO_ROOT%\runtime\cmake\OpenVINOConfig.cmake" (
+              echo ERROR: OpenVINOConfig.cmake not found
+              exit /b 1
+          )
+          call "%OPENVINO_ROOT%\setupvars.bat"
+          cmake -B build\ReleaseOV -G "Visual Studio 17 2022" ^
+            -A x64 ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DGGML_OPENVINO=ON ^
+            -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake ^
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build\ReleaseOV --config Release -- /m
+
+      # ─── Pack steps (per backend, correct shell) ───
+      - name: Pack artifacts (CPU)
+        if: ${{ matrix.backend == 'cpu' }}
+        run: |
+          mkdir .\dist
+          copy .\build\bin\Release\*.exe .\dist\
+          copy .\build\bin\Release\*.dll .\dist\
+          7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-cpu-${{ matrix.arch }}.zip .\dist\*
+
+      - name: Pack artifacts (CUDA)
+        if: ${{ matrix.backend == 'cuda' }}
+        run: |
+          mkdir .\dist
+          copy .\build\bin\Release\*.exe .\dist\
+          copy .\build\bin\Release\*.dll .\dist\
+          7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-cuda-${{ matrix.cuda }}-${{ matrix.arch }}.zip .\dist\*
+
+      - name: Pack artifacts (Vulkan)
+        if: ${{ matrix.backend == 'vulkan' }}
+        run: |
+          mkdir .\dist
+          copy .\build\bin\Release\*.exe .\dist\
+          copy .\build\bin\Release\*.dll .\dist\
+          7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-vulkan-x64.zip .\dist\*
+
+      - name: Pack artifacts (HIP)
+        if: ${{ matrix.backend == 'hip' }}
+        run: |
+          7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-hip-${{ matrix.name }}-x64.zip .\build\bin\*
+
+      - name: Pack artifacts (SYCL)
+        if: ${{ matrix.backend == 'sycl' }}
+        run: |
+          cp "${{ env.ONEAPI_ROOT }}/mkl/latest/bin/mkl_sycl_blas.5.dll" ./build/bin
+          cp "${{ env.ONEAPI_ROOT }}/mkl/latest/bin/mkl_core.2.dll" ./build/bin
+          cp "${{ env.ONEAPI_ROOT }}/mkl/latest/bin/mkl_tbb_thread.2.dll" ./build/bin
+          cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/ur_adapter_level_zero.dll" ./build/bin
+          cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/ur_adapter_level_zero_v2.dll" ./build/bin
+          cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/ur_adapter_opencl.dll" ./build/bin
+          cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/ur_loader.dll" ./build/bin
+          cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/ur_win_proxy_loader.dll" ./build/bin
+          $ZE_LOADER_DLL=$(find "${{ env.ONEAPI_ROOT }}" "$env:LEVEL_ZERO_V1_SDK_PATH" -iname ze_loader.dll -print -quit 2>/dev/null || true)
+          if ($ZE_LOADER_DLL) { cp "$ZE_LOADER_DLL" ./build/bin }
+          cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/sycl8.dll" ./build/bin
+          cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/svml_dispmd.dll" ./build/bin
+          cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/libmmd.dll" ./build/bin
+          cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/libiomp5md.dll" ./build/bin
+          cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/sycl-ls.exe" ./build/bin
+          cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/libsycl-fallback-bfloat16.spv" ./build/bin
+          cp "${{ env.ONEAPI_ROOT }}/compiler/latest/bin/libsycl-native-bfloat16.spv" ./build/bin
+          cp "${{ env.ONEAPI_ROOT }}/dnnl/latest/bin/dnnl.dll" ./build/bin
+          cp "${{ env.ONEAPI_ROOT }}/tbb/latest/bin/tbb12.dll" ./build/bin
+          cp "${{ env.ONEAPI_ROOT }}/tcm/latest/bin/tcm.dll" ./build/bin
+          cp "${{ env.ONEAPI_ROOT }}/tcm/latest/bin/libhwloc-15.dll" ./build/bin
+          cp "${{ env.ONEAPI_ROOT }}/umf/latest/bin/umf.dll" ./build/bin
+          7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-sycl-x64.zip ./build/bin/*
+
+      - name: Pack artifacts (OpenVINO)
+        if: ${{ matrix.backend == 'openvino' }}
+        run: |
+          $OPENVINO_ROOT = (Get-ChildItem -Directory openvino_toolkit | Select-Object -First 1).FullName
+          if (-not $OPENVINO_ROOT) { Write-Error "OpenVINO toolkit folder not found"; exit 1 }
+          $dest = ".\build\ReleaseOV\bin\Release"
+          $ovBin = Join-Path $OPENVINO_ROOT 'runtime\bin\intel64\Release'
+          Copy-Item -Path (Join-Path $ovBin '*.dll') -Destination $dest -Force
+          Copy-Item -Path (Join-Path $ovBin 'cache.json') -Destination $dest -Force
+          $tbbBin = Join-Path $OPENVINO_ROOT 'runtime\3rdparty\tbb\bin'
+          Copy-Item -Path (Join-Path $tbbBin 'tbb*.dll') -Destination $dest -Force
+          $licensingDest = Join-Path $dest 'openvino-licensing'
+          New-Item -ItemType Directory -Force -Path $licensingDest | Out-Null
+          Copy-Item -Path (Join-Path $OPENVINO_ROOT 'docs\licensing\*') -Destination $licensingDest -Recurse -Force
+          Copy-Item LICENSE $dest
+          7z a -snl ${{ needs.prepare.outputs.repo_name }}-${{ needs.prepare.outputs.tag_name }}-bin-win-openvino-${{ env.OPENVINO_VERSION_MAJOR }}-x64.zip $dest\*
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
