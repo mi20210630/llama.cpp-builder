@@ -756,7 +756,7 @@ jobs:
             -DGGML_HIP_ROCWMMA_FATTN=ON `
             -DGGML_HIP=ON `
             ${{ env.CMAKE_ARGS }}
-          cmake --build build --target ggml-hip -j ${env:NUMBER_OF_PROCESSORS}
+          cmake --build build --config Release -j ${env:NUMBER_OF_PROCESSORS}
           md "build\bin\rocblas\library\"
           md "build\bin\hipblaslt\library"
           cp "${env:HIP_PATH}\bin\libhipblas.dll" "build\bin\"
@@ -776,7 +776,7 @@ jobs:
             -DGGML_BACKEND_DL=ON -DBUILD_SHARED_LIBS=ON ^
             -DGGML_CPU=OFF -DGGML_SYCL=ON ^
             ${{ env.CMAKE_ARGS }}
-          cmake --build build --target ggml-sycl -j %NUMBER_OF_PROCESSORS%
+          cmake --build build --config Release -j %NUMBER_OF_PROCESSORS%
 
       - name: Build (OpenVINO)
         if: ${{ matrix.backend == 'openvino' }}
